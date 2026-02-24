@@ -18,5 +18,8 @@ session_start();
     <?php else: ?>
         <a href="login.php">Se connecter</a>
     <?php endif; ?>
+
+    <br><br>
+    <a href="stats.php">📊 Voir les statistiques</a>
 </body>
 </html>

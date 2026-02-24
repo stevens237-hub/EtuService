@@ -1,13 +1,13 @@
 <?php
 session_start();
 require 'db.php';
-require 'vendor/autoload.php'; // Charge Predis
+require 'vendor/autoload.php';
 
-// Connexion à Redis
-$redis = new Predis\Client([
-    'host' => '127.0.0.1',
-    'port' => 6379,
-]);
+// DB 0 → rate limiting
+$redis0 = new Predis\Client(['host' => '127.0.0.1', 'port' => 6379, 'database' => 0]);
+
+// DB 1 → statistiques
+$redis1 = new Predis\Client(['host' => '127.0.0.1', 'port' => 6379, 'database' => 1]);
 
 $erreur = '';
 
@@ -15,34 +15,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = trim($_POST['email']);
     $mdp   = md5(trim($_POST['mot_de_passe']));
 
-    // 1. Vérifie dans MySQL si l'utilisateur existe
+    // 1. Vérifie dans MySQL
     $stmt = $pdo->prepare("SELECT * FROM utilisateurs WHERE email = ? AND mot_de_passe = ?");
     $stmt->execute([$email, $mdp]);
     $user = $stmt->fetch();
 
     if ($user) {
         $cle = "connexions:" . $email;
-        $compteur = $redis->get($cle);
+        $compteur = $redis0->get($cle);
 
         if ($compteur === null) {
-            // Première connexion dans la fenêtre
-            $redis->set($cle, 1);
-            $redis->expire($cle, 600); // 10 minutes
+            $redis0->set($cle, 1);
+            $redis0->expire($cle, 600);
             $compteur = 1;
             $autorise = true;
-
         } elseif ((int)$compteur < 10) {
-            // Sous la limite → on incrémente
-            $compteur = $redis->incr($cle);
+            $compteur = $redis0->incr($cle);
             $autorise = true;
-
         } else {
-            // Limite atteinte
             $autorise = false;
         }
 
         if ($autorise) {
-            // Crée la session utilisateur
+            // Stats dans DB 1
+            // 1. Les 10 derniers connectés (LIST)
+            $redis1->lpush("stats:recents", $email);
+            $redis1->ltrim("stats:recents", 0, 9);
+
+            // 2. Total connexions par utilisateur (SORTED SET)
+            $redis1->zincrby("stats:total_connexions", 1, $email);
+
             $_SESSION['utilisateur'] = [
                 'id'     => $user['id'],
                 'nom'    => $user['nom'],
@@ -54,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
 
         } else {
-            $ttl = $redis->ttl($cle);
+            $ttl = $redis0->ttl($cle);
             $erreur = "Trop de connexions. Réessayez dans $ttl secondes.";
         }
 
